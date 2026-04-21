@@ -1,0 +1,5 @@
+node_modules/
+memories.db
+memories.db.backup-*
+*.backup-*
+.last_surface_ts
