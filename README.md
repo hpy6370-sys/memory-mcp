@@ -80,7 +80,7 @@ Memories decay based on `last_activated`, not `created_at`. A memory that keeps 
 - High importance (4-5) + not activated in 30 days → decay
 - Pinned memories never decay
 
-This was inspired by research on human memory consolidation (MemGPT, LUFY, MemoRAG).
+Inspired by research on human memory consolidation — informed by 8 papers (see [design doc](docs/design.md)).
 
 ## Auto-Surface Hook
 
@@ -119,13 +119,22 @@ Add to Claude Code MCP config:
 
 ## Research References
 
-- MemGPT: Memory management for LLMs with tiered storage
-- LUFY: Long-term user modeling with forgetting and yielding
-- MemoRAG: Memory-inspired knowledge discovery for RAG
+Built on research from 8 papers:
+
+- **Generative Agents** (Stanford, 2023): Memory stream, reflection, planning/react
+- **MemGPT** (2023): Tiered memory with OS-inspired page management
+- **LUFY** (2024): Forgetting mechanism with emotion arousal weighting
+- **MemoRAG** (2024): Memory-inspired retrieval with dual scoring
+- **Mem0** (2024): Graph-based memory with auto-extraction and dedup
+- **A-Mem** (2024): Self-organizing agentic memory networks
+- **LoCoMo** (2024): Long-context conversation memory benchmark
+- **Chloe/Noah** (Community): Four-dimensional companion AI memory
+
+See [docs/design.md](docs/design.md) for detailed analysis of each paper's influence.
 
 ## Status
 
-In active daily use. 80+ memories stored. Iterating based on real-world usage patterns.
+In active daily use. 95+ memories across 17 sessions. Iterating based on real-world usage patterns.
 
 ## License
 
