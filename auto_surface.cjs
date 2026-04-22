@@ -8,8 +8,8 @@ const fs = require("fs");
 
 const DB_PATH = path.join(__dirname, "memories.db");
 const COOLDOWN_FILE = path.join(__dirname, ".last_surface_ts");
-const COOLDOWN_MS = 45000;
-const MIN_LENGTH = 8;
+const COOLDOWN_MS = 10000;
+const MIN_LENGTH = 4;
 
 let input = "";
 process.stdin.on("data", (chunk) => (input += chunk));
