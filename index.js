@@ -624,12 +624,24 @@ server.tool("memory_consolidate",
       return { content: [{ type: "text", text: "没有找到需要整合的聚类" }] };
     }
 
+    // Auto-fill related_ids for memories in the same cluster
+    for (const cluster of clusters) {
+      const ids = cluster.map(m => m.id);
+      for (const m of cluster) {
+        const existing = db.prepare("SELECT related_ids FROM memories WHERE id = ?").get(m.id);
+        let currentIds = [];
+        try { currentIds = JSON.parse(existing.related_ids || '[]'); } catch {}
+        const newIds = [...new Set([...currentIds, ...ids.filter(id => id !== m.id)])];
+        db.prepare("UPDATE memories SET related_ids = ? WHERE id = ?").run(JSON.stringify(newIds), m.id);
+      }
+    }
+
     const output = clusters.map((cluster, i) =>
       `### 聚类 ${i + 1}（${cluster.length}条）\n` +
       cluster.map(m => `- [#${m.id}] ${m.title}（Layer ${m.layer}，相似度${(m.similarity * 100).toFixed(0)}%）\n  ${m.summary}`).join('\n')
     ).join('\n\n');
 
-    return { content: [{ type: "text", text: `找到${clusters.length}个可整合聚类：\n\n${output}\n\n请根据以上聚类，用memory_write写type='consolidated'的整合记忆，related_ids填源记忆ID。` }] };
+    return { content: [{ type: "text", text: `找到${clusters.length}个可整合聚类（已自动填充related_ids）：\n\n${output}\n\n请根据以上聚类，用memory_write写type='consolidated'的整合记忆，related_ids填源记忆ID。` }] };
   }
 );
 
