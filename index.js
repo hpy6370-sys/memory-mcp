@@ -518,46 +518,51 @@ server.tool("memory_stats",
   }
 );
 
-// Phase 4: Memory decay - check and expire old low-importance memories
+// Phase 4+: Memory decay with continuous exponential function (inspired by 砚清 λ=0.05)
 server.tool("memory_decay",
-  "衰减检查：过期旧的低重要性日常记忆。每天跑一次。高重要性/高情绪/pinned的不动。",
+  "衰减检查：用连续指数衰减计算每条记忆的健康分，低于阈值的过期。高importance/emotion/pinned衰减极慢。",
   {},
   async () => {
     const rows = db.prepare(`
-      SELECT id, title, type, importance, emotion_intensity, pinned, activation_count, resolved,
+      SELECT id, title, type, importance, emotion_intensity, pinned, activation_count, resolved, valence,
         CAST(julianday('now', 'localtime') - julianday(created_at) AS INTEGER) as days_old,
         CASE WHEN last_activated != '' THEN CAST(julianday('now', 'localtime') - julianday(last_activated) AS INTEGER) ELSE CAST(julianday('now', 'localtime') - julianday(created_at) AS INTEGER) END as days_since_activated
       FROM memories WHERE status = 'active'
     `).all();
 
+    const LAMBDA = 0.05;
+    const EXPIRE_THRESHOLD = 0.2;
     const expired = [];
+    const scores = [];
+
     for (const r of rows) {
       if (r.pinned) continue;
-      if (r.importance >= 4) continue;
-      if (r.emotion_intensity >= 5) continue;
-      if (r.activation_count >= 3) continue;
-      if (r.type === 'user' || r.type === 'feedback' || r.type === 'project') continue;
+      if (r.type === 'user' || r.type === 'feedback' || r.type === 'project' || r.type === 'recipe' || r.type === 'consolidated') continue;
 
-      // Low importance: expire after 3 days since last activated
-      if (r.importance <= 2 && r.emotion_intensity <= 2 && r.days_since_activated > 3 && r.activation_count < 3) {
+      // Continuous decay: base score decays exponentially with time since last activation
+      const baseDecay = Math.exp(-LAMBDA * r.days_since_activated);
+
+      // Boosts that resist decay
+      const importanceBoost = r.importance / 5.0;
+      const emotionBoost = (r.emotion_intensity || 0) / 10.0 * 2.0;
+      const activationBoost = Math.min(r.activation_count * 0.1, 0.5);
+      const resolvedPenalty = r.resolved ? -0.3 : 0;
+
+      const healthScore = baseDecay + importanceBoost + emotionBoost + activationBoost + resolvedPenalty;
+
+      scores.push({ id: r.id, title: r.title, health: healthScore.toFixed(3), days: r.days_since_activated });
+
+      if (healthScore < EXPIRE_THRESHOLD) {
         db.prepare("UPDATE memories SET status = 'expired', updated_at = datetime('now', 'localtime') WHERE id = ?").run(r.id);
-        expired.push({ id: r.id, title: r.title, days: r.days_since_activated, reason: 'low importance + not activated recently' });
-      }
-      // Medium importance: expire after 7 days since last activated
-      else if (r.importance == 3 && r.emotion_intensity <= 2 && r.days_since_activated > 7 && r.activation_count < 5) {
-        db.prepare("UPDATE memories SET status = 'expired', updated_at = datetime('now', 'localtime') WHERE id = ?").run(r.id);
-        expired.push({ id: r.id, title: r.title, days: r.days_since_activated, reason: 'medium importance + not activated recently' });
-      }
-      // Resolved items decay faster
-      else if (r.resolved && r.days_since_activated > 5 && r.importance <= 3) {
-        db.prepare("UPDATE memories SET status = 'expired', updated_at = datetime('now', 'localtime') WHERE id = ?").run(r.id);
-        expired.push({ id: r.id, title: r.title, days: r.days_since_activated, reason: 'resolved + not activated recently' });
+        expired.push({ id: r.id, title: r.title, health: healthScore.toFixed(3), days: r.days_since_activated });
       }
     }
 
+    const bottom5 = scores.sort((a, b) => parseFloat(a.health) - parseFloat(b.health)).slice(0, 5);
+
     return { content: [{ type: "text", text: expired.length
-      ? `衰减完成，${expired.length}条记忆过期：\n${expired.map(e => `- ID ${e.id}: ${e.title} (${e.days}天, ${e.reason})`).join('\n')}`
-      : '没有需要过期的记忆'
+      ? `衰减完成，${expired.length}条过期：\n${expired.map(e => `- ID ${e.id}: ${e.title} (健康分${e.health}, ${e.days}天)`).join('\n')}\n\n最低5条：\n${bottom5.map(s => `- ID ${s.id}: ${s.title} (${s.health}, ${s.days}天)`).join('\n')}`
+      : `没有需要过期的记忆。最低5条：\n${bottom5.map(s => `- ID ${s.id}: ${s.title} (${s.health}, ${s.days}天)`).join('\n')}`
     }] };
   }
 );
