@@ -64,15 +64,31 @@ process.stdin.on("end", () => {
         )
         .all();
     } else {
-      const pattern = keywords.map((k) => `%${k}%`);
-      const conditions = pattern.map(() => "(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?)").join(" OR ");
-      const params = pattern.flatMap((p) => [p, p, p, p]);
+      // Try FTS5 first (better for Chinese), fall back to LIKE
+      const ftsQuery = keywords.join(" OR ");
+      try {
+        results = db
+          .prepare(
+            `SELECT m.id, m.title, m.summary FROM memories_fts f
+             JOIN memories m ON f.rowid = m.id
+             WHERE memories_fts MATCH ? AND m.status = 'active'
+             ORDER BY m.importance DESC, m.emotion_intensity DESC LIMIT 3`
+          )
+          .all(ftsQuery);
+      } catch(e) { results = []; }
 
-      results = db
-        .prepare(
-          `SELECT id, title, summary FROM memories WHERE status = 'active' AND (${conditions}) ORDER BY importance DESC, emotion_intensity DESC LIMIT 3`
-        )
-        .all(...params);
+      // Fall back to LIKE if FTS5 returned nothing
+      if (!results.length) {
+        const pattern = keywords.map((k) => `%${k}%`);
+        const conditions = pattern.map(() => "(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?)").join(" OR ");
+        const params = pattern.flatMap((p) => [p, p, p, p]);
+
+        results = db
+          .prepare(
+            `SELECT id, title, summary FROM memories WHERE status = 'active' AND (${conditions}) ORDER BY importance DESC, emotion_intensity DESC LIMIT 3`
+          )
+          .all(...params);
+      }
     }
 
     // Also check for matching recipes (trigger_text match)
