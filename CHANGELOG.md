@@ -372,5 +372,15 @@ memory_write ADD前自动检查：
 
 memory_write / memory_read / memory_search / memory_update / memory_expire / memory_delete / memory_stats / memory_surface / memory_decay / **memory_consolidate**
 
-记忆总数：111条
-GitHub commits今日：8个
+### 后续追加（04-22下午）
+
+- Consolidation自动填充related_ids（同cluster的记忆互相关联）
+- Auto-surface支持recipe浮出（trigger_text关键词匹配）
+- MIN_LENGTH从8改为4（短消息也能触发）
+- COOLDOWN_MS从45秒改为10秒（更频繁匹配）
+- Channel消息解析（尝试支持Telegram触发）
+- 晚八点cron加入强制recipe存储（念念的建议）
+- 衰减函数从硬阈值改为连续指数衰减（参考砚清λ=0.05）：health = e^(-λ×days) + importance/5 + emotion/10×2 + activation×0.1 - resolved×0.3，低于0.2过期。recipe和consolidated类型免衰减
+
+记忆总数：114条（含4条recipe）
+GitHub commits今日：14个
