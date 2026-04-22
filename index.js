@@ -156,12 +156,12 @@ server.tool("memory_write",
     }
 
     // Default: ADD
-    // Check for similar memories before adding (auto-merge if >75% similar)
+    // Check for similar memories before adding (auto-merge if >80% similar)
     try {
       const checkText = [content, summary || "", tags || ""].filter(Boolean).join(" ");
       const checkVec = await generateEmbedding(checkText);
       const similar = await searchByEmbedding(checkVec, 1);
-      if (similar.length > 0 && similar[0].similarity > 0.75) {
+      if (similar.length > 0 && similar[0].similarity > 0.80) {
         const existing = db.prepare("SELECT * FROM memories WHERE id = ?").get(similar[0].id);
         if (existing && existing.status === 'active' && !existing.pinned && !pinned) {
           const mergedContent = existing.content + "\n[更新 " + new Date().toISOString().slice(0,10) + "] " + content;
