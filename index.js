@@ -152,6 +152,14 @@ server.tool("memory_write",
       fields.push("updated_at = datetime('now', 'localtime')");
       params.push(update_id);
       db.prepare(`UPDATE memories SET ${fields.join(", ")} WHERE id = ?`).run(...params);
+      if (content || summary || tags) {
+        try {
+          const existing = db.prepare("SELECT content, summary, tags FROM memories WHERE id = ?").get(update_id);
+          const textForEmbedding = [existing.content, existing.summary || "", existing.tags || ""].filter(Boolean).join(" ");
+          const vec = await generateEmbedding(textForEmbedding);
+          db.prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(JSON.stringify(vec), update_id);
+        } catch(e) {}
+      }
       return { content: [{ type: "text", text: `记忆 ${update_id} 已更新` }] };
     }
 
