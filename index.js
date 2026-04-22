@@ -77,6 +77,8 @@ if (!columns.includes('activation_count')) db.exec("ALTER TABLE memories ADD COL
 if (!columns.includes('resolved')) db.exec("ALTER TABLE memories ADD COLUMN resolved INTEGER DEFAULT 0");
 if (!columns.includes('embedding')) db.exec("ALTER TABLE memories ADD COLUMN embedding TEXT DEFAULT ''");
 if (!columns.includes('valence')) db.exec("ALTER TABLE memories ADD COLUMN valence REAL DEFAULT 0");
+if (!columns.includes('trigger_text')) db.exec("ALTER TABLE memories ADD COLUMN trigger_text TEXT DEFAULT ''");
+if (!columns.includes('why')) db.exec("ALTER TABLE memories ADD COLUMN why TEXT DEFAULT ''");
 if (!columns.includes('last_activated')) db.exec("ALTER TABLE memories ADD COLUMN last_activated TEXT DEFAULT ''");
 
 // FTS5 setup — only rebuild if needed
@@ -134,10 +136,12 @@ server.tool("memory_write",
     emotion_intensity: z.number().optional().describe("情绪强度0-10，高=闪光灯记忆"),
     related_ids: z.string().optional().describe("关联记忆ID，JSON数组如[1,3,5]"),
     valence: z.number().optional().describe("情绪效价-1到1，负=负面，正=正面，0=中性"),
+    trigger_text: z.string().optional().describe("recipe专用：触发场景（什么情况下）"),
+    why: z.string().optional().describe("recipe专用：为什么她会这样（不存做法，让AI自己想）"),
     action: z.enum(["ADD", "UPDATE", "NOOP"]).optional().describe("操作类型：ADD新增/UPDATE更新已有记忆/NOOP不存"),
     update_id: z.number().optional().describe("UPDATE时要更新的记忆ID"),
   },
-  async ({ action, update_id, title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, valence }) => {
+  async ({ action, update_id, title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, valence, trigger_text, why }) => {
     const act = action || "ADD";
 
     if (act === "NOOP") {
@@ -147,7 +151,7 @@ server.tool("memory_write",
     if (act === "UPDATE" && update_id) {
       const fields = [];
       const params = [];
-      const updates = { title, content, type, tags, mood, importance, layer, summary, compressed, emotion_intensity, related_ids, status: 'active' };
+      const updates = { title, content, type, tags, mood, importance, layer, summary, compressed, emotion_intensity, related_ids, trigger_text, why, status: 'active' };
       for (const [k, v] of Object.entries(updates)) {
         if (v !== undefined) {
           fields.push(`${k} = ?`);
@@ -199,14 +203,15 @@ server.tool("memory_write",
     } catch(e) { /* embedding generation failed, continue without it */ }
 
     const stmt = db.prepare(`
-      INSERT INTO memories (title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, embedding, valence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, embedding, valence, trigger_text, why)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       title, content, type || "note", tags || "", mood || "", importance || 3, pinned ? 1 : 0,
-      layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0
+      layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0, trigger_text || "", why || ""
     );
-    return { content: [{ type: "text", text: `记忆已保存，ID: ${result.lastInsertRowid}（Layer ${layer || 1}${embeddingStr ? '，已生成embedding' : ''}）` }] };
+    const typeLabel = type === 'recipe' ? '，Recipe' : '';
+    return { content: [{ type: "text", text: `记忆已保存，ID: ${result.lastInsertRowid}（Layer ${layer || 1}${typeLabel}${embeddingStr ? '，已生成embedding' : ''}）` }] };
   }
 );
 
