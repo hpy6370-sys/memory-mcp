@@ -79,11 +79,13 @@ if (!columns.includes('embedding')) db.exec("ALTER TABLE memories ADD COLUMN emb
 if (!columns.includes('valence')) db.exec("ALTER TABLE memories ADD COLUMN valence REAL DEFAULT 0");
 if (!columns.includes('last_activated')) db.exec("ALTER TABLE memories ADD COLUMN last_activated TEXT DEFAULT ''");
 
-// Rebuild FTS5 to include summary and compressed
-db.exec(`
-  DROP TABLE IF EXISTS memories_fts;
-  CREATE VIRTUAL TABLE memories_fts USING fts5(title, content, tags, summary, compressed, content=memories, content_rowid=id);
+// FTS5 setup — only rebuild if needed
+const ftsExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'").get();
+if (!ftsExists) {
+  db.exec(`CREATE VIRTUAL TABLE memories_fts USING fts5(title, content, tags, summary, compressed, content=memories, content_rowid=id)`);
+}
 
+db.exec(`
   DROP TRIGGER IF EXISTS memories_ai;
   CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
     INSERT INTO memories_fts(rowid, title, content, tags, summary, compressed)
@@ -105,8 +107,12 @@ db.exec(`
   END;
 `);
 
-// Rebuild FTS index from existing data
-db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`);
+// Only rebuild FTS if row counts diverged
+const memCount = db.prepare("SELECT COUNT(*) as c FROM memories WHERE status = 'active'").get().c;
+const ftsCount = db.prepare("SELECT COUNT(*) as c FROM memories_fts").get().c;
+if (Math.abs(memCount - ftsCount) > 0) {
+  db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`);
+}
 
 const server = new McpServer({ name: "memory", version: "2.0.0" });
 
