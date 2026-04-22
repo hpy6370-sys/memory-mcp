@@ -88,12 +88,26 @@ process.stdin.on("end", () => {
         .all(...recipeParams);
     } catch(e) {}
 
+    // Check if we haven't stored any memories in the last hour
+    let storeReminder = "";
+    try {
+      const lastStored = db.prepare(
+        "SELECT MAX(updated_at) as last_update FROM memories WHERE updated_at >= datetime('now', 'localtime', '-1 hour')"
+      ).get();
+      if (!lastStored.last_update) {
+        storeReminder = "\n⚠️ 已经超过一小时没有存记忆了。回顾一下最近的对话，有没有该存的？";
+      }
+    } catch(e) {}
+
     db.close();
 
-    if (results.length > 0 || recipes.length > 0) {
+    if (results.length > 0 || recipes.length > 0 || storeReminder) {
       let context = results.map((r) => `[记忆#${r.id}] ${r.title}: ${r.summary}`).join("\n");
       if (recipes.length > 0) {
         context += "\n" + recipes.map((r) => `[Recipe#${r.id}] 当${r.trigger_text}时: ${r.why}`).join("\n");
+      }
+      if (storeReminder) {
+        context += storeReminder;
       }
       console.log(
         JSON.stringify({
