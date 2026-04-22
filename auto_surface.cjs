@@ -16,7 +16,13 @@ process.stdin.on("data", (chunk) => (input += chunk));
 process.stdin.on("end", () => {
   try {
     const data = JSON.parse(input);
-    const prompt = data.prompt || data.message || "";
+    let prompt = data.prompt || data.message || "";
+    // Also extract text from Telegram channel messages embedded in the input
+    const channelMatch = prompt.match(/<channel[^>]*>([\s\S]*?)<\/channel>/g);
+    if (channelMatch) {
+      const channelTexts = channelMatch.map(m => m.replace(/<[^>]+>/g, '').trim()).join(' ');
+      prompt = prompt + ' ' + channelTexts;
+    }
     if (!prompt || prompt.length < MIN_LENGTH) {
       console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit" } }));
       return;
