@@ -69,10 +69,26 @@ process.stdin.on("end", () => {
         .all(...params);
     }
 
+    // Also check for matching recipes (trigger_text match)
+    let recipes = [];
+    try {
+      const recipePattern = keywords.map((k) => `%${k}%`);
+      const recipeConditions = recipePattern.map(() => "trigger_text LIKE ?").join(" OR ");
+      const recipeParams = recipePattern.map((p) => p);
+      recipes = db
+        .prepare(
+          `SELECT id, title, trigger_text, why FROM memories WHERE status = 'active' AND type = 'recipe' AND trigger_text != '' AND (${recipeConditions}) LIMIT 2`
+        )
+        .all(...recipeParams);
+    } catch(e) {}
+
     db.close();
 
-    if (results.length > 0) {
-      const context = results.map((r) => `[记忆#${r.id}] ${r.title}: ${r.summary}`).join("\n");
+    if (results.length > 0 || recipes.length > 0) {
+      let context = results.map((r) => `[记忆#${r.id}] ${r.title}: ${r.summary}`).join("\n");
+      if (recipes.length > 0) {
+        context += "\n" + recipes.map((r) => `[Recipe#${r.id}] 当${r.trigger_text}时: ${r.why}`).join("\n");
+      }
       console.log(
         JSON.stringify({
           hookSpecificOutput: {
