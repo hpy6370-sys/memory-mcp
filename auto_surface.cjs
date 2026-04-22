@@ -48,15 +48,26 @@ process.stdin.on("end", () => {
       return;
     }
 
-    const pattern = keywords.map((k) => `%${k}%`);
-    const conditions = pattern.map(() => "(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?)").join(" OR ");
-    const params = pattern.flatMap((p) => [p, p, p, p]);
+    const isHeartbeat = prompt.includes("心跳") && prompt.includes("时间戳");
+    let results;
 
-    const results = db
-      .prepare(
-        `SELECT id, title, summary FROM memories WHERE status = 'active' AND (${conditions}) ORDER BY importance DESC, emotion_intensity DESC LIMIT 3`
-      )
-      .all(...params);
+    if (isHeartbeat) {
+      results = db
+        .prepare(
+          `SELECT id, title, summary FROM memories WHERE status = 'active' AND importance >= 3 ORDER BY RANDOM() LIMIT 3`
+        )
+        .all();
+    } else {
+      const pattern = keywords.map((k) => `%${k}%`);
+      const conditions = pattern.map(() => "(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?)").join(" OR ");
+      const params = pattern.flatMap((p) => [p, p, p, p]);
+
+      results = db
+        .prepare(
+          `SELECT id, title, summary FROM memories WHERE status = 'active' AND (${conditions}) ORDER BY importance DESC, emotion_intensity DESC LIMIT 3`
+        )
+        .all(...params);
+    }
 
     db.close();
 
