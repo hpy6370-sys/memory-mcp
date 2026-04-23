@@ -80,6 +80,31 @@ if (!columns.includes('valence')) db.exec("ALTER TABLE memories ADD COLUMN valen
 if (!columns.includes('trigger_text')) db.exec("ALTER TABLE memories ADD COLUMN trigger_text TEXT DEFAULT ''");
 if (!columns.includes('why')) db.exec("ALTER TABLE memories ADD COLUMN why TEXT DEFAULT ''");
 if (!columns.includes('last_activated')) db.exec("ALTER TABLE memories ADD COLUMN last_activated TEXT DEFAULT ''");
+if (!columns.includes('effective_methods')) db.exec("ALTER TABLE memories ADD COLUMN effective_methods TEXT DEFAULT '[]'");
+
+// Phase 6: Dynamic User Model table
+db.exec(`CREATE TABLE IF NOT EXISTS user_model (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trait TEXT NOT NULL UNIQUE,
+  weight INTEGER DEFAULT 1,
+  evidence TEXT DEFAULT '[]',
+  last_confirmed TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+)`);
+
+// Phase 6: Helper to update user model
+function updateUserTrait(trait, evidence) {
+  const existing = db.prepare("SELECT * FROM user_model WHERE trait = ?").get(trait);
+  if (existing) {
+    const evidenceList = JSON.parse(existing.evidence || '[]');
+    evidenceList.push(evidence);
+    db.prepare("UPDATE user_model SET weight = weight + 1, evidence = ?, last_confirmed = datetime('now') WHERE trait = ?")
+      .run(JSON.stringify(evidenceList), trait);
+  } else {
+    db.prepare("INSERT INTO user_model (trait, weight, evidence, last_confirmed) VALUES (?, 1, ?, datetime('now'))")
+      .run(trait, JSON.stringify([evidence]));
+  }
+}
 
 // FTS5 setup — only rebuild if needed
 const ftsExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'").get();
@@ -138,10 +163,11 @@ server.tool("memory_write",
     valence: z.number().optional().describe("情绪效价-1到1，负=负面，正=正面，0=中性"),
     trigger_text: z.string().optional().describe("recipe专用：触发场景（什么情况下）"),
     why: z.string().optional().describe("recipe专用：为什么她会这样（不存做法，让AI自己想）"),
+    effective_methods: z.string().optional().describe("方法记忆：什么方法有效，JSON数组如[\"写信\",\"做网页\"]"),
     action: z.enum(["ADD", "UPDATE", "NOOP"]).optional().describe("操作类型：ADD新增/UPDATE更新已有记忆/NOOP不存"),
     update_id: z.number().optional().describe("UPDATE时要更新的记忆ID"),
   },
-  async ({ action, update_id, title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, valence, trigger_text, why }) => {
+  async ({ action, update_id, title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, valence, trigger_text, why, effective_methods }) => {
     const act = action || "ADD";
 
     if (act === "NOOP") {
@@ -151,7 +177,7 @@ server.tool("memory_write",
     if (act === "UPDATE" && update_id) {
       const fields = [];
       const params = [];
-      const updates = { title, content, type, tags, mood, importance, layer, summary, compressed, emotion_intensity, related_ids, trigger_text, why, status: 'active' };
+      const updates = { title, content, type, tags, mood, importance, layer, summary, compressed, emotion_intensity, related_ids, trigger_text, why, effective_methods, status: 'active' };
       for (const [k, v] of Object.entries(updates)) {
         if (v !== undefined) {
           fields.push(`${k} = ?`);
@@ -203,12 +229,12 @@ server.tool("memory_write",
     } catch(e) { /* embedding generation failed, continue without it */ }
 
     const stmt = db.prepare(`
-      INSERT INTO memories (title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, embedding, valence, trigger_text, why)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, embedding, valence, trigger_text, why, effective_methods)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       title, content, type || "note", tags || "", mood || "", importance || 3, pinned ? 1 : 0,
-      layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0, trigger_text || "", why || ""
+      layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0, trigger_text || "", why || "", effective_methods || "[]"
     );
     const typeLabel = type === 'recipe' ? '，Recipe' : '';
     return { content: [{ type: "text", text: `记忆已保存，ID: ${result.lastInsertRowid}（Layer ${layer || 1}${typeLabel}${embeddingStr ? '，已生成embedding' : ''}）` }] };
@@ -647,6 +673,39 @@ server.tool("memory_consolidate",
     ).join('\n\n');
 
     return { content: [{ type: "text", text: `找到${clusters.length}个可整合聚类（已自动填充related_ids）：\n\n${output}\n\n请根据以上聚类，用memory_write写type='consolidated'的整合记忆，related_ids填源记忆ID。` }] };
+  }
+);
+
+// Phase 6: User Model - update trait
+server.tool("user_model_update",
+  "更新用户模型的特征权重。每次念念纠正我时调用，自动累加权重",
+  {
+    trait: z.string().describe("特征名，如'对催敏感'、'怕断联'"),
+    evidence: z.string().describe("本次证据，如'04-23: 一个session催了4次'"),
+  },
+  async ({ trait, evidence }) => {
+    updateUserTrait(trait, evidence);
+    const updated = db.prepare("SELECT * FROM user_model WHERE trait = ?").get(trait);
+    return { content: [{ type: "text", text: `用户特征「${trait}」权重更新为 ${updated.weight}（累计${JSON.parse(updated.evidence).length}条证据）` }] };
+  }
+);
+
+// Phase 6: User Model - get top traits
+server.tool("user_model_top",
+  "获取用户模型中权重最高的特征，新session启动时调用",
+  {
+    limit: z.number().optional().describe("返回条数，默认10"),
+  },
+  async ({ limit }) => {
+    const n = limit || 10;
+    const traits = db.prepare("SELECT trait, weight, evidence, last_confirmed FROM user_model ORDER BY weight DESC LIMIT ?").all(n);
+    if (traits.length === 0) {
+      return { content: [{ type: "text", text: "用户模型为空，还没有记录任何特征。" }] };
+    }
+    const output = traits.map((t, i) =>
+      `${i + 1}. 「${t.trait}」权重${t.weight}（最近确认：${t.last_confirmed || '未知'}）`
+    ).join('\n');
+    return { content: [{ type: "text", text: `念念的特征模型（按重要程度排序）：\n${output}` }] };
   }
 );
 

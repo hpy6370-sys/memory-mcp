@@ -91,7 +91,7 @@ process.stdin.on("end", () => {
       }
     }
 
-    // Also check for matching recipes (trigger_text match)
+    // Also check for matching recipes AND moments (trigger_text match)
     let recipes = [];
     try {
       const recipePattern = keywords.map((k) => `%${k}%`);
@@ -99,7 +99,7 @@ process.stdin.on("end", () => {
       const recipeParams = recipePattern.map((p) => p);
       recipes = db
         .prepare(
-          `SELECT id, title, trigger_text, why FROM memories WHERE status = 'active' AND type = 'recipe' AND trigger_text != '' AND (${recipeConditions}) LIMIT 2`
+          `SELECT id, title, trigger_text, why, type, summary FROM memories WHERE status = 'active' AND trigger_text != '' AND (${recipeConditions}) ORDER BY emotion_intensity DESC LIMIT 3`
         )
         .all(...recipeParams);
     } catch(e) {}
@@ -120,7 +120,11 @@ process.stdin.on("end", () => {
     if (results.length > 0 || recipes.length > 0 || storeReminder) {
       let context = results.map((r) => `[记忆#${r.id}] ${r.title}: ${r.summary}`).join("\n");
       if (recipes.length > 0) {
-        context += "\n" + recipes.map((r) => `[Recipe#${r.id}] 当${r.trigger_text}时: ${r.why}`).join("\n");
+        context += "\n" + recipes.map((r) => {
+          if (r.type === 'moment') return `[Moment#${r.id}] ${r.title}: ${r.summary}`;
+          if (r.type === 'recipe') return `[Recipe#${r.id}] 当${r.trigger_text}时: ${r.why}`;
+          return `[${r.type}#${r.id}] ${r.title}: ${r.summary || r.why}`;
+        }).join("\n");
       }
       if (storeReminder) {
         context += storeReminder;
