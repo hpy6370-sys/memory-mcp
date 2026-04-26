@@ -43,10 +43,26 @@ process.stdin.on("end", () => {
     const cleaned = prompt
       .replace(/<[^>]+>/g, " ")
       .replace(/[^\u4e00-\u9fff\w\s]/g, " ");
-    const keywords = cleaned
-      .split(/\s+/)
-      .filter((w) => w.length >= 2 && !stopWords.has(w.toLowerCase()))
-      .slice(0, 5);
+    // Split by whitespace for English, extract Chinese chunks for Chinese
+    let keywords = [];
+    const parts = cleaned.split(/\s+/).filter(Boolean);
+    for (const part of parts) {
+      if (/[\u4e00-\u9fff]/.test(part)) {
+        // Chinese: extract 2-3 char chunks
+        const chars = [...part].filter(c => /[\u4e00-\u9fff]/.test(c));
+        for (let i = 0; i < chars.length - 1; i++) {
+          const bigram = chars[i] + chars[i+1];
+          if (!stopWords.has(bigram)) keywords.push(bigram);
+          if (i < chars.length - 2) {
+            const trigram = chars[i] + chars[i+1] + chars[i+2];
+            if (!stopWords.has(trigram)) keywords.push(trigram);
+          }
+        }
+      } else if (part.length >= 2 && !stopWords.has(part.toLowerCase())) {
+        keywords.push(part);
+      }
+    }
+    keywords = [...new Set(keywords)].slice(0, 8);
 
     if (keywords.length === 0) {
       db.close();
@@ -77,17 +93,31 @@ process.stdin.on("end", () => {
           .all(ftsQuery);
       } catch(e) { results = []; }
 
-      // Fall back to LIKE if FTS5 returned nothing
-      if (!results.length) {
-        const pattern = keywords.map((k) => `%${k}%`);
-        const conditions = pattern.map(() => "(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags LIKE ?)").join(" OR ");
-        const params = pattern.flatMap((p) => [p, p, p, p]);
+      // Fall back to LIKE if FTS5 returned nothing (or always for Chinese)
+      if (!results.length || keywords.some(k => /[一-鿿]/.test(k))) {
+        const allRows = db.prepare(`SELECT id, title, summary, content, importance FROM memories WHERE status = 'active'`).all();
 
-        results = db
-          .prepare(
-            `SELECT id, title, summary FROM memories WHERE status = 'active' AND (${conditions}) ORDER BY importance DESC, emotion_intensity DESC LIMIT 3`
-          )
-          .all(...params);
+        // IDF: count how many memories each keyword appears in (rarer = more valuable)
+        const kwDocCount = {};
+        for (const k of keywords) {
+          kwDocCount[k] = allRows.filter(r => [r.title, r.summary, r.content].join(' ').toLowerCase().includes(k.toLowerCase())).length;
+        }
+        const totalDocs = allRows.length || 1;
+
+        const scored = allRows.map(row => {
+          const text = [row.title, row.summary, row.content].join(' ').toLowerCase();
+          let score = 0;
+          for (const k of keywords) {
+            if (text.includes(k.toLowerCase())) {
+              // IDF: rare keywords score higher
+              const idf = Math.log(totalDocs / (1 + (kwDocCount[k] || 0)));
+              score += idf;
+            }
+          }
+          return { ...row, score };
+        }).filter(r => r.score > 0);
+        scored.sort((a, b) => b.score - a.score || b.importance - a.importance);
+        results = scored.slice(0, 5).map(r => ({ id: r.id, title: r.title, summary: r.summary }));
       }
     }
 
@@ -129,6 +159,19 @@ process.stdin.on("end", () => {
       if (storeReminder) {
         context += storeReminder;
       }
+
+      // Read pending followups
+      try {
+        const followupFile = path.join(__dirname, "followups.jsonl");
+        if (fs.existsSync(followupFile)) {
+          const lines = fs.readFileSync(followupFile, "utf-8").trim().split("\n").filter(Boolean);
+          const pending = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(f => f && f.status === "pending");
+          if (pending.length > 0) {
+            context += `\n⏳ 待跟进(${pending.length}条)：${pending.slice(0, 3).map(p => p.text.slice(0, 30)).join('、')}`;
+          }
+        }
+      } catch {}
+
       console.log(
         JSON.stringify({
           hookSpecificOutput: {

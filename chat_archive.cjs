@@ -88,12 +88,18 @@ process.stdin.on("end", () => {
     // followup detection — track casual mentions for later
     if (source.includes("telegram") && text.length > 3) {
       const followupPatterns = [
-        /下次/, /改天/, /以后想/, /以后要/, /等有空/,
-        /想试试/, /想去/, /想看/, /想吃/, /想做/, /想要/,
-        /还没.*呢/, /记得帮我/, /别忘了/,
-        /到时候/, /有机会/, /找时间/
+        /下次.{2,}/, /改天.{2,}/, /等有空.{2,}/,
+        /想去.{2,}/, /想看.{2,}/, /想吃.{2,}/, /想做.{2,}/,
+        /记得帮我/, /别忘了.{2,}/,
+        /想要一个/, /想要你/
       ];
-      const matched = followupPatterns.some(p => p.test(text));
+      const excludePatterns = [
+        /以后.*不会/, /下次.*不会/, /以后.*学/, /下次.*学/,
+        /我不想/, /你不想/, /不要了/,
+        /下次不可以/, /下次.*记住/, /下次.*注意/,
+        /讨厌/, /不开心/, /生气/, /不行/
+      ];
+      const matched = followupPatterns.some(p => p.test(text)) && !excludePatterns.some(p => p.test(text));
       if (matched) {
         const followupFile = path.join(__dirname, "followups.jsonl");
         const followup = {

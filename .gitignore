@@ -6,3 +6,4 @@ memories.db.backup-*
 chat_archive/
 mem0_data/
 followups.jsonl
+.env

@@ -1,36 +1,87 @@
-"""mem0 bridge - called from chat_archive.cjs to auto-extract memories"""
-import sys, os, json, warnings
+"""Fact extractor — extracts facts from messages, stores directly in memories.db as Layer 1."""
+import sys, os, json, warnings, sqlite3
 warnings.filterwarnings('ignore')
 
-GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
-DATA_PATH = os.path.join(os.path.dirname(__file__), 'mem0_data')
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
-def get_memory():
-    os.environ['GROQ_API_KEY'] = GROQ_KEY
-    from mem0 import Memory
-    return Memory.from_config({
-        'llm': {'provider': 'groq', 'config': {'model': 'llama-3.3-70b-versatile', 'api_key': GROQ_KEY}},
-        'embedder': {'provider': 'huggingface', 'config': {'model': 'sentence-transformers/all-MiniLM-L6-v2'}},
-        'vector_store': {'provider': 'qdrant', 'config': {'collection_name': 'niannian', 'path': DATA_PATH, 'embedding_model_dims': 384}},
-        'version': 'v1.1'
-    })
+DB_PATH = os.path.join(os.path.dirname(__file__), 'memories.db')
+GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
+
+def extract_and_store(text):
+    if not GROQ_KEY or len(text) < 15:
+        return
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_KEY)
+        resp = client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[
+                {'role': 'system', 'content': 'Extract PERSONAL facts about the speaker from this message. Return a JSON array of short fact strings about the person (their preferences, habits, belongings, experiences, schedule, health, relationships). Do NOT extract definitions, general knowledge, or facts about other people. If no personal facts, return []. Respond ONLY with the JSON array.'},
+                {'role': 'user', 'content': text}
+            ],
+            temperature=0,
+            max_tokens=500
+        )
+        content = resp.choices[0].message.content.strip()
+        if content.startswith('['):
+            facts = json.loads(content)
+        else:
+            return
+
+        if not facts:
+            return
+
+        db = sqlite3.connect(DB_PATH)
+        for fact in facts[:5]:
+            if isinstance(fact, str) and len(fact) > 5:
+                cursor = db.execute(
+                    """INSERT INTO memories (title, content, type, tags, importance, layer, summary, status)
+                    VALUES (?, ?, 'note', 'auto-extracted,fact', 3, 1, ?, 'active')""",
+                    (fact[:50], fact, fact)
+                )
+                row_id = cursor.lastrowid
+                db.execute(
+                    """INSERT INTO memories_fts (rowid, title, content, tags, summary, compressed)
+                    VALUES (?, ?, ?, 'auto-extracted,fact', ?, '')""",
+                    (row_id, fact[:50], fact, fact)
+                )
+        db.commit()
+        db.close()
+    except Exception as e:
+        pass
+
+def search_facts(query):
+    try:
+        db = sqlite3.connect(DB_PATH)
+        results = db.execute(
+            """SELECT content FROM memories
+            WHERE tags LIKE '%auto-extracted%' AND status = 'active'
+            AND (content LIKE ? OR summary LIKE ?)
+            ORDER BY created_at DESC LIMIT 10""",
+            (f'%{query}%', f'%{query}%')
+        ).fetchall()
+        db.close()
+        return json.dumps([r[0] for r in results], ensure_ascii=False)
+    except:
+        return '[]'
 
 if __name__ == '__main__':
-    action = sys.argv[1] if len(sys.argv) > 1 else 'add'
-    text = sys.argv[2] if len(sys.argv) > 2 else ''
-    if not text:
-        text = sys.stdin.read().strip()
-    if not text:
-        sys.exit(0)
-
-    m = get_memory()
-
+    if len(sys.argv) < 3:
+        sys.exit(1)
+    action = sys.argv[1]
+    text = sys.argv[2]
     if action == 'add':
-        result = m.add(text, user_id='niannian')
-        print(json.dumps(result, ensure_ascii=False))
+        extract_and_store(text)
     elif action == 'search':
-        result = m.search(text, filters={'user_id': 'niannian'})
-        print(json.dumps(result, ensure_ascii=False))
+        print(search_facts(text))
     elif action == 'all':
-        result = m.get_all(filters={'user_id': 'niannian'})
-        print(json.dumps(result, ensure_ascii=False))
+        try:
+            db = sqlite3.connect(DB_PATH)
+            results = db.execute(
+                "SELECT content FROM memories WHERE tags LIKE '%auto-extracted%' AND status = 'active' ORDER BY created_at DESC LIMIT 20"
+            ).fetchall()
+            db.close()
+            print(json.dumps([r[0] for r in results], ensure_ascii=False))
+        except:
+            print('[]')

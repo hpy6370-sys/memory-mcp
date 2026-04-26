@@ -104,6 +104,10 @@ if (!columns.includes('why')) db.exec("ALTER TABLE memories ADD COLUMN why TEXT 
 if (!columns.includes('last_activated')) db.exec("ALTER TABLE memories ADD COLUMN last_activated TEXT DEFAULT ''");
 if (!columns.includes('effective_methods')) db.exec("ALTER TABLE memories ADD COLUMN effective_methods TEXT DEFAULT '[]'");
 
+// v2.3.0: Three temporal dimensions (Recall-AI inspired)
+if (!columns.includes('event_time')) db.exec("ALTER TABLE memories ADD COLUMN event_time TEXT DEFAULT ''");
+if (!columns.includes('known_time')) db.exec("ALTER TABLE memories ADD COLUMN known_time TEXT DEFAULT ''");
+
 // Phase 6: Dynamic User Model table
 db.exec(`CREATE TABLE IF NOT EXISTS user_model (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,13 +187,14 @@ server.tool("memory_write",
     emotion_intensity: z.number().optional().describe("情绪强度0-10，高=闪光灯记忆"),
     related_ids: z.string().optional().describe("关联记忆ID，JSON数组如[1,3,5]"),
     valence: z.number().optional().describe("情绪效价-1到1，负=负面，正=正面，0=中性"),
+    event_time: z.string().optional().describe("事件实际发生的时间，如2026-04-26T14:00（三时态之一）"),
     trigger_text: z.string().optional().describe("recipe专用：触发场景（什么情况下）"),
     why: z.string().optional().describe("recipe专用：为什么她会这样（不存做法，让AI自己想）"),
     effective_methods: z.string().optional().describe("方法记忆：什么方法有效，JSON数组如[\"写信\",\"做网页\"]"),
     action: z.enum(["ADD", "UPDATE", "NOOP"]).optional().describe("操作类型：ADD新增/UPDATE更新已有记忆/NOOP不存"),
     update_id: z.number().optional().describe("UPDATE时要更新的记忆ID"),
   },
-  async ({ action, update_id, title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, valence, trigger_text, why, effective_methods }) => {
+  async ({ action, update_id, title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, valence, event_time, trigger_text, why, effective_methods }) => {
     const act = action || "ADD";
 
     if (act === "NOOP") {
@@ -274,12 +279,12 @@ server.tool("memory_write",
     } catch(e) { /* embedding generation failed, continue without it */ }
 
     const stmt = db.prepare(`
-      INSERT INTO memories (title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, embedding, valence, trigger_text, why, effective_methods)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, embedding, valence, event_time, trigger_text, why, effective_methods)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       title, content, type || "note", tags || "", mood || "", importance || 3, pinned ? 1 : 0,
-      layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0, trigger_text || "", why || "", effective_methods || "[]"
+      layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0, event_time || "", trigger_text || "", why || "", effective_methods || "[]"
     );
     const newId = result.lastInsertRowid;
     // Backfill superseded memories with correct new ID
@@ -371,9 +376,53 @@ server.tool("memory_search",
       }
     } catch(e) {}
 
+    // Channel 3: Temporal search (boost results with event_time for time-related queries)
+    const timeWords = /when|什么时候|几月|几号|几点|哪天|哪一天|多久|上次|last time|date|日期/i;
+    if (timeWords.test(query)) {
+      const timeRows = db.prepare(
+        "SELECT * FROM memories WHERE event_time != '' AND status = 'active' LIMIT 20"
+      ).all();
+      for (const tr of timeRows) {
+        if (!candidates.has(tr.id)) {
+          const docText = [tr.title, tr.content, tr.tags, tr.summary].filter(Boolean).join(' ');
+          const bm25 = bm25Score(query, docText);
+          if (bm25 > 0) {
+            candidates.set(tr.id, { ...tr, bm25: bm25 * 1.3, semanticSim: 0, finalScore: 0 });
+          }
+        } else {
+          candidates.get(tr.id).bm25 *= 1.3; // boost time-tagged memories
+        }
+      }
+    }
+
+    // Channel 4: mem0 fact search (auto-extracted facts)
+    try {
+      const { execSync } = await import('node:child_process');
+      const mem0Result = execSync(
+        `python "${join(__dirname, 'mem0_bridge.py')}" search "${query.replace(/"/g, '\\"')}"`,
+        { timeout: 5000, encoding: 'utf-8' }
+      ).trim();
+      if (mem0Result && mem0Result !== '[]') {
+        const mem0Facts = JSON.parse(mem0Result);
+        if (Array.isArray(mem0Facts)) {
+          for (const fact of mem0Facts.slice(0, 5)) {
+            const factText = fact.memory || fact.text || String(fact);
+            // Add as a virtual candidate with high score
+            const virtualId = -1 * (candidates.size + 1);
+            candidates.set(virtualId, {
+              id: virtualId, title: 'mem0-fact', content: factText,
+              type: 'mem0', tags: '', summary: factText, layer: 1,
+              importance: 4, bm25: 0, semanticSim: 0.8, finalScore: 0.8,
+              status: 'active', source: 'mem0'
+            });
+          }
+        }
+      }
+    } catch(e) { /* mem0 search failed, continue without it */ }
+
     // Compute dual scores and rank
     const rows = [...candidates.values()].map(c => {
-      c.finalScore = dualScore(c.semanticSim, c.bm25);
+      if (!c.source) c.finalScore = dualScore(c.semanticSim, c.bm25);
       return c;
     });
     rows.sort((a, b) => b.finalScore - a.finalScore || b.importance - a.importance);
@@ -478,10 +527,11 @@ server.tool("memory_surface",
 
     let related = [];
     if (newRelatedIds.length > 0) {
+      const placeholders = newRelatedIds.map(() => '?').join(',');
       related = db.prepare(`
         SELECT *, 0 as tier FROM memories
-        WHERE id IN (${newRelatedIds.join(',')}) AND status = 'active'
-      `).all();
+        WHERE id IN (${placeholders}) AND status = 'active'
+      `).all(...newRelatedIds.map(Number));
     }
 
     // Rumination roll: 30% chance to inject an unresolved high-emotion memory
