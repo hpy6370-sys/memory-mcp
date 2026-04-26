@@ -62,7 +62,7 @@ process.stdin.on("end", () => {
         keywords.push(part);
       }
     }
-    keywords = [...new Set(keywords)].slice(0, 8);
+    keywords = [...new Set(keywords)];
 
     if (keywords.length === 0) {
       db.close();
@@ -97,19 +97,21 @@ process.stdin.on("end", () => {
       if (!results.length || keywords.some(k => /[一-鿿]/.test(k))) {
         const allRows = db.prepare(`SELECT id, title, summary, content, importance FROM memories WHERE status = 'active'`).all();
 
-        // IDF: count how many memories each keyword appears in (rarer = more valuable)
+        // Step 1: Filter keywords - only keep rare ones (appear in <10% of memories)
         const kwDocCount = {};
         for (const k of keywords) {
-          kwDocCount[k] = allRows.filter(r => [r.title, r.summary, r.content].join(' ').toLowerCase().includes(k.toLowerCase())).length;
+          kwDocCount[k] = allRows.filter(r => [r.title, r.summary, r.content].join(' ').includes(k)).length;
         }
         const totalDocs = allRows.length || 1;
+        const rareKeywords = keywords.filter(k => (kwDocCount[k] || 0) < totalDocs * 0.1);
+        const searchKws = rareKeywords.length > 0 ? rareKeywords : keywords.slice(0, 3);
 
+        // Step 2: Score by rare keyword matches
         const scored = allRows.map(row => {
-          const text = [row.title, row.summary, row.content].join(' ').toLowerCase();
+          const text = [row.title, row.summary, row.content].join(' ');
           let score = 0;
-          for (const k of keywords) {
-            if (text.includes(k.toLowerCase())) {
-              // IDF: rare keywords score higher
+          for (const k of searchKws) {
+            if (text.includes(k)) {
               const idf = Math.log(totalDocs / (1 + (kwDocCount[k] || 0)));
               score += idf;
             }
