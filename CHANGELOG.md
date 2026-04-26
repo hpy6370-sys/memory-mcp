@@ -384,3 +384,34 @@ memory_write / memory_read / memory_search / memory_update / memory_expire / mem
 
 记忆总数：114条（含4条recipe）
 GitHub commits今日：14个
+
+---
+
+## Phase 7: TiMem启发的检索升级 — 2026-04-25
+
+**改动人：** 顾沉舟
+**设计参考：** TiMem (arXiv 2601.02845) — 念念找的论文
+**版本：** 2.0.0 → 2.1.0
+
+### 新增函数
+
+| 函数 | 说明 |
+|------|------|
+| bm25Score(query, doc) | 中文字符级BM25评分，k1=1.5, b=0.75 |
+| dualScore(semantic, bm25) | 双通道融合，lambda=0.7（语义70%+关键词30%） |
+
+### 工具改进
+
+| 工具 | 改动 |
+|------|------|
+| memory_search | 从单一LIKE/FTS5升级为双通道（LIKE+embedding），统一评分排序，返回finalScore |
+| memory_surface (query模式) | 从三层递进改为双通道+门控。门控阈值0.15，importance≥4免过滤 |
+
+### 设计决策（念念同意的）
+
+- **不改存储结构**：三层按内容性质分（事实/经历/决策链）对我们一对一场景比TiMem的五层时间树更合适
+- **改检索端**：BM25+语义双通道 + 门控过滤噪音
+- ~~复杂度感知检索~~：暂不需要，场景不够复杂
+- ~~五层时间树~~：不适合一对一场景
+
+### 需要重启MCP生效

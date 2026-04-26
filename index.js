@@ -34,6 +34,28 @@ function cosineSimilarity(a, b) {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+// BM25 scoring for Chinese text (character-level tokenization)
+function bm25Score(query, document, k1 = 1.5, b = 0.75) {
+  const queryChars = [...new Set(query.split(''))];
+  const docChars = document.split('');
+  const docLen = docChars.length;
+  const avgDl = 200;
+  let score = 0;
+  for (const qc of queryChars) {
+    const tf = docChars.filter(c => c === qc).length;
+    if (tf === 0) continue;
+    const idf = Math.log(1 + 1 / (tf / docLen + 0.5));
+    score += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * docLen / avgDl));
+  }
+  return score;
+}
+
+// Dual-channel scoring: semantic + BM25
+function dualScore(semanticSim, bm25, lambda = 0.7) {
+  const normalizedBm25 = Math.min(bm25 / 10, 1);
+  return lambda * semanticSim + (1 - lambda) * normalizedBm25;
+}
+
 async function searchByEmbedding(queryVector, topK = 5) {
   const rows = db.prepare("SELECT id, embedding FROM memories WHERE status = 'active' AND embedding IS NOT NULL AND embedding != ''").all();
   const scored = [];
@@ -141,7 +163,7 @@ if (Math.abs(memCount - ftsCount) > 0) {
   db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`);
 }
 
-const server = new McpServer({ name: "memory", version: "2.0.0" });
+const server = new McpServer({ name: "memory", version: "2.1.0" });
 
 // Write a memory (Phase 1: supports layers, summary, compression, emotion, relations)
 server.tool("memory_write",
@@ -220,6 +242,29 @@ server.tool("memory_write",
       }
     } catch(e) { /* merge check failed, continue with normal ADD */ }
 
+    // Auto-contradiction detection: find similar active memories that might be outdated
+    let superseded = [];
+    try {
+      const contradictionVec = await generateEmbedding([content, summary || "", tags || ""].filter(Boolean).join(" "));
+      const candidates = await searchByEmbedding(contradictionVec, 5);
+      for (const c of candidates) {
+        if (c.similarity > 0.55 && c.similarity < 0.80) {
+          const old = db.prepare("SELECT * FROM memories WHERE id = ? AND status = 'active' AND layer = 1").get(c.id);
+          if (old && (layer === 1 || !layer)) {
+            const titleOverlap = title && old.title && (
+              old.title.includes(title.slice(0, 6)) || title.includes(old.title.slice(0, 6))
+            );
+            const tagOverlap = tags && old.tags && tags.split(",").some(t => old.tags.includes(t.trim()));
+            if (titleOverlap || tagOverlap) {
+              db.prepare("UPDATE memories SET status = 'expired', summary = '[已被ID ' || ? || ' 取代] ' || summary WHERE id = ?")
+                .run(0, old.id); // placeholder, will update after insert
+              superseded.push(old.id);
+            }
+          }
+        }
+      }
+    } catch(e) { /* contradiction check failed, continue */ }
+
     // Generate embedding from combined text (A-Mem style: content+summary+tags)
     let embeddingStr = "";
     try {
@@ -236,8 +281,16 @@ server.tool("memory_write",
       title, content, type || "note", tags || "", mood || "", importance || 3, pinned ? 1 : 0,
       layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0, trigger_text || "", why || "", effective_methods || "[]"
     );
+    const newId = result.lastInsertRowid;
+    // Backfill superseded memories with correct new ID
+    if (superseded.length > 0) {
+      for (const oldId of superseded) {
+        db.prepare("UPDATE memories SET summary = '[已被ID ' || ? || ' 取代] ' || REPLACE(summary, '[已被ID 0 取代] ', '') WHERE id = ?").run(newId, oldId);
+      }
+    }
     const typeLabel = type === 'recipe' ? '，Recipe' : '';
-    return { content: [{ type: "text", text: `记忆已保存，ID: ${result.lastInsertRowid}（Layer ${layer || 1}${typeLabel}${embeddingStr ? '，已生成embedding' : ''}）` }] };
+    const supersededLabel = superseded.length > 0 ? `，已取代旧记忆 ${superseded.join(',')}` : '';
+    return { content: [{ type: "text", text: `记忆已保存，ID: ${newId}（Layer ${layer || 1}${typeLabel}${embeddingStr ? '，已生成embedding' : ''}${supersededLabel}）` }] };
   }
 );
 
@@ -270,42 +323,63 @@ server.tool("memory_read",
 
 // Search memories (Phase 1: covers all text fields including summary and compressed)
 server.tool("memory_search",
-  "搜索记忆，支持关键词全文搜索，覆盖所有文本字段",
+  "搜索记忆。双通道：语义embedding + BM25关键词。覆盖所有文本字段。",
   {
     query: z.string().describe("搜索关键词"),
     layer: z.number().optional().describe("只搜指定层级"),
     limit: z.number().optional().describe("返回条数，默认10"),
   },
   async ({ query, layer, limit }) => {
-    let rows = [];
-    // Try FTS5 first
+    const maxResults = limit || 10;
+    const candidates = new Map();
+
+    // Channel 1: LIKE keyword search (fast, exact)
+    const pattern = `%${query}%`;
+    let likeQuery = `
+      SELECT * FROM memories
+      WHERE (title LIKE ? OR content LIKE ? OR tags LIKE ? OR summary LIKE ? OR compressed LIKE ?)
+      AND status = 'active'`;
+    const likeParams = [pattern, pattern, pattern, pattern, pattern];
+    if (layer) { likeQuery += " AND layer = ?"; likeParams.push(layer); }
+    likeQuery += " LIMIT 30";
+    const likeRows = db.prepare(likeQuery).all(...likeParams);
+    for (const row of likeRows) {
+      const docText = [row.title, row.content, row.tags, row.summary].filter(Boolean).join(' ');
+      const bm25 = bm25Score(query, docText);
+      candidates.set(row.id, { ...row, bm25, semanticSim: 0, finalScore: 0 });
+    }
+
+    // Channel 2: Semantic embedding search
     try {
-      let ftsQuery = `
-        SELECT m.*, rank FROM memories_fts f
-        JOIN memories m ON f.rowid = m.id
-        WHERE memories_fts MATCH ?`;
-      const params = [query];
-      if (layer) { ftsQuery += " AND m.layer = ?"; params.push(layer); }
-      ftsQuery += " ORDER BY rank LIMIT ?";
-      params.push(limit || 10);
-      rows = db.prepare(ftsQuery).all(...params);
-    } catch (e) {
-      // FTS5 match syntax error, fall through to LIKE
-    }
-    // Fallback to LIKE for Chinese text
-    if (!rows.length) {
-      const pattern = `%${query}%`;
-      let likeQuery = `
-        SELECT *, 0 as rank FROM memories
-        WHERE (title LIKE ? OR content LIKE ? OR tags LIKE ? OR summary LIKE ? OR compressed LIKE ?)
-        AND status = 'active'`;
-      const params = [pattern, pattern, pattern, pattern, pattern];
-      if (layer) { likeQuery += " AND layer = ?"; params.push(layer); }
-      likeQuery += " ORDER BY pinned DESC, importance DESC, emotion_intensity DESC, updated_at DESC LIMIT ?";
-      params.push(limit || 10);
-      rows = db.prepare(likeQuery).all(...params);
-    }
-    return { content: [{ type: "text", text: rows.length ? JSON.stringify(rows, null, 2) : "没有找到相关记忆" }] };
+      const queryVec = await generateEmbedding(query);
+      const embResults = await searchByEmbedding(queryVec, 20);
+      for (const er of embResults) {
+        if (layer) {
+          const mem = db.prepare("SELECT layer FROM memories WHERE id = ?").get(er.id);
+          if (mem && mem.layer !== layer) continue;
+        }
+        if (candidates.has(er.id)) {
+          candidates.get(er.id).semanticSim = er.similarity;
+        } else if (er.similarity > 0.25) {
+          const mem = db.prepare("SELECT * FROM memories WHERE id = ? AND status = 'active'").get(er.id);
+          if (mem) {
+            const docText = [mem.title, mem.content, mem.tags, mem.summary].filter(Boolean).join(' ');
+            const bm25 = bm25Score(query, docText);
+            candidates.set(er.id, { ...mem, bm25, semanticSim: er.similarity, finalScore: 0 });
+          }
+        }
+      }
+    } catch(e) {}
+
+    // Compute dual scores and rank
+    const rows = [...candidates.values()].map(c => {
+      c.finalScore = dualScore(c.semanticSim, c.bm25);
+      return c;
+    });
+    rows.sort((a, b) => b.finalScore - a.finalScore || b.importance - a.importance);
+    const result = rows.slice(0, maxResults).map(({ embedding, ...rest }) => rest);
+
+    return { content: [{ type: "text", text: result.length ? JSON.stringify(result, null, 2) : "没有找到相关记忆" }] };
   }
 );
 
@@ -349,57 +423,45 @@ server.tool("memory_surface",
       results = important;
       results._daily = daily;
     } else {
-      // With query: three-tier search
+      // With query: dual-channel search with recall gating
       const pattern = `%${query}%`;
+      const candidates = new Map();
 
-      // Tier 1: Search Layer 3 (decision chains) first
-      results = db.prepare(`
-        SELECT *, 3 as tier FROM memories
-        WHERE layer = 3 AND status = 'active'
-        AND (content LIKE ? OR summary LIKE ? OR compressed LIKE ?)
-        ORDER BY emotion_intensity DESC, importance DESC
-        LIMIT ?
-      `).all(pattern, pattern, pattern, maxResults);
-
-      // Tier 2: If not enough, search by emotion + importance across all layers
-      if (results.length < maxResults) {
-        const tier2 = db.prepare(`
-          SELECT *, 2 as tier FROM memories
-          WHERE status = 'active' AND id NOT IN (${results.map(r => r.id).join(',') || '0'})
-          AND (content LIKE ? OR summary LIKE ? OR compressed LIKE ? OR tags LIKE ?)
-          ORDER BY emotion_intensity DESC, importance DESC
-          LIMIT ?
-        `).all(pattern, pattern, pattern, pattern, maxResults - results.length);
-        results = results.concat(tier2);
+      // Collect candidates from LIKE search
+      const likeRows = db.prepare(`
+        SELECT * FROM memories WHERE status = 'active'
+        AND (title LIKE ? OR content LIKE ? OR tags LIKE ? OR summary LIKE ? OR compressed LIKE ?)
+        LIMIT 30
+      `).all(pattern, pattern, pattern, pattern, pattern);
+      for (const row of likeRows) {
+        const docText = [row.title, row.content, row.tags, row.summary].filter(Boolean).join(' ');
+        candidates.set(row.id, { ...row, bm25: bm25Score(query, docText), semanticSim: 0 });
       }
 
-      // Tier 2.5: Semantic embedding search
-      if (results.length < maxResults) {
-        try {
-          const queryVec = await generateEmbedding(query);
-          const embeddingResults = await searchByEmbedding(queryVec, maxResults);
-          const existingIds = new Set(results.map(r => r.id));
-          for (const er of embeddingResults) {
-            if (!existingIds.has(er.id) && er.similarity > 0.3) {
-              const mem = db.prepare("SELECT * FROM memories WHERE id = ?").get(er.id);
-              if (mem) { mem.tier = 2.5; mem.similarity = er.similarity; results.push(mem); }
+      // Collect candidates from embedding search
+      try {
+        const queryVec = await generateEmbedding(query);
+        const embResults = await searchByEmbedding(queryVec, 15);
+        for (const er of embResults) {
+          if (candidates.has(er.id)) {
+            candidates.get(er.id).semanticSim = er.similarity;
+          } else if (er.similarity > 0.25) {
+            const mem = db.prepare("SELECT * FROM memories WHERE id = ? AND status = 'active'").get(er.id);
+            if (mem) {
+              const docText = [mem.title, mem.content, mem.tags, mem.summary].filter(Boolean).join(' ');
+              candidates.set(er.id, { ...mem, bm25: bm25Score(query, docText), semanticSim: er.similarity });
             }
-            if (results.length >= maxResults) break;
           }
-        } catch(e) { /* embedding search failed, continue */ }
-      }
+        }
+      } catch(e) {}
 
-      // Tier 3: If still not enough, broad keyword search
-      if (results.length < maxResults) {
-        const tier3 = db.prepare(`
-          SELECT *, 1 as tier FROM memories
-          WHERE status = 'active' AND id NOT IN (${results.map(r => r.id).join(',') || '0'})
-          AND (title LIKE ? OR content LIKE ? OR tags LIKE ? OR summary LIKE ? OR compressed LIKE ?)
-          ORDER BY importance DESC, updated_at DESC
-          LIMIT ?
-        `).all(pattern, pattern, pattern, pattern, pattern, maxResults - results.length);
-        results = results.concat(tier3);
-      }
+      // Score and gate: filter out low-relevance candidates
+      const gateThreshold = 0.15;
+      results = [...candidates.values()]
+        .map(c => { c.finalScore = dualScore(c.semanticSim, c.bm25); return c; })
+        .filter(c => c.finalScore > gateThreshold || c.importance >= 4)
+        .sort((a, b) => b.finalScore - a.finalScore || b.importance - a.importance)
+        .slice(0, maxResults);
     }
 
     // Associative activation: pull in related memories

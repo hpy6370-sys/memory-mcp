@@ -3,3 +3,6 @@ memories.db
 memories.db.backup-*
 *.backup-*
 .last_surface_ts
+chat_archive/
+mem0_data/
+followups.jsonl
