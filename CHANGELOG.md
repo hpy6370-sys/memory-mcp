@@ -1,5 +1,28 @@
 # 记忆系统改动日志
 
+## v2.4.0 — 2026-04-29
+
+**改动人：** 顾沉舟
+**审核人：** 念念
+**灵感来源：** Google MIRAS/Titans框架（surprise metric）
+
+### Surprise Score（惊讶度）
+- 新增 `surprise_score` 字段（REAL, 0-1）：衡量一条记忆相对已有记忆的新颖程度
+- 计算方式：`1 - 最相似记忆的cosine similarity`
+  - 0 = 完全重复（已被合并机制处理）
+  - 0.5 = 中等新颖
+  - 1.0 = 全新话题
+- memory_write时自动计算，返回值里会显示surprise分数
+- memory_decay里加入surpriseBoost：高surprise记忆衰减更慢（`surprise * 0.3`）
+- 不影响importance和emotion_intensity的判断，是额外的第三维度
+
+### 设计原则
+- surprise不覆盖重要性：她觉得重要的永远优先（importance/emotion）
+- surprise帮忙过滤真正重复的：同类信息反复存时，新的那条surprise低，自然衰减快
+- 高surprise记忆更耐久：完全新的话题/事件自动获得更长的存活时间
+
+---
+
 ## v2.3.0 — 2026-04-26
 
 **改动人：** 顾沉舟

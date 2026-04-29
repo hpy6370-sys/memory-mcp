@@ -107,6 +107,7 @@ if (!columns.includes('effective_methods')) db.exec("ALTER TABLE memories ADD CO
 // v2.3.0: Three temporal dimensions (Recall-AI inspired)
 if (!columns.includes('event_time')) db.exec("ALTER TABLE memories ADD COLUMN event_time TEXT DEFAULT ''");
 if (!columns.includes('known_time')) db.exec("ALTER TABLE memories ADD COLUMN known_time TEXT DEFAULT ''");
+if (!columns.includes('surprise_score')) db.exec("ALTER TABLE memories ADD COLUMN surprise_score REAL DEFAULT 0.5");
 
 // Phase 6: Dynamic User Model table
 db.exec(`CREATE TABLE IF NOT EXISTS user_model (
@@ -272,19 +273,27 @@ server.tool("memory_write",
 
     // Generate embedding from combined text (A-Mem style: content+summary+tags)
     let embeddingStr = "";
+    let surpriseScore = 0.5;
     try {
       const textForEmbedding = [content, summary || "", tags || ""].filter(Boolean).join(" ");
       const vec = await generateEmbedding(textForEmbedding);
       embeddingStr = JSON.stringify(vec);
+      // Calculate surprise_score: how novel is this memory compared to existing ones?
+      const topMatches = await searchByEmbedding(vec, 1);
+      if (topMatches.length > 0) {
+        surpriseScore = Math.max(0, Math.min(1, 1 - topMatches[0].similarity));
+      } else {
+        surpriseScore = 1.0;
+      }
     } catch(e) { /* embedding generation failed, continue without it */ }
 
     const stmt = db.prepare(`
-      INSERT INTO memories (title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, embedding, valence, event_time, trigger_text, why, effective_methods)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (title, content, type, tags, mood, importance, pinned, layer, summary, compressed, session_id, emotion_intensity, related_ids, embedding, valence, event_time, trigger_text, why, effective_methods, surprise_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       title, content, type || "note", tags || "", mood || "", importance || 3, pinned ? 1 : 0,
-      layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0, event_time || "", trigger_text || "", why || "", effective_methods || "[]"
+      layer || 1, summary || "", compressed || "", session_id || "", emotion_intensity || 0, related_ids || "[]", embeddingStr, valence || 0, event_time || "", trigger_text || "", why || "", effective_methods || "[]", surpriseScore
     );
     const newId = result.lastInsertRowid;
     // Backfill superseded memories with correct new ID
@@ -295,7 +304,8 @@ server.tool("memory_write",
     }
     const typeLabel = type === 'recipe' ? '，Recipe' : '';
     const supersededLabel = superseded.length > 0 ? `，已取代旧记忆 ${superseded.join(',')}` : '';
-    return { content: [{ type: "text", text: `记忆已保存，ID: ${newId}（Layer ${layer || 1}${typeLabel}${embeddingStr ? '，已生成embedding' : ''}${supersededLabel}）` }] };
+    const surpriseLabel = `，surprise=${surpriseScore.toFixed(2)}`;
+    return { content: [{ type: "text", text: `记忆已保存，ID: ${newId}（Layer ${layer || 1}${typeLabel}${embeddingStr ? '，已生成embedding' : ''}${surpriseLabel}${supersededLabel}）` }] };
   }
 );
 
@@ -662,7 +672,7 @@ server.tool("memory_decay",
   {},
   async () => {
     const rows = db.prepare(`
-      SELECT id, title, type, importance, emotion_intensity, pinned, activation_count, resolved, valence,
+      Select id, title, type, importance, emotion_intensity, pinned, activation_count, resolved, valence, surprise_score,
         CAST(julianday('now', 'localtime') - julianday(created_at) AS INTEGER) as days_old,
         CASE WHEN last_activated != '' THEN CAST(julianday('now', 'localtime') - julianday(last_activated) AS INTEGER) ELSE CAST(julianday('now', 'localtime') - julianday(created_at) AS INTEGER) END as days_since_activated
       FROM memories WHERE status = 'active'
@@ -684,9 +694,10 @@ server.tool("memory_decay",
       const importanceBoost = r.importance / 5.0;
       const emotionBoost = (r.emotion_intensity || 0) / 10.0 * 2.0;
       const activationBoost = Math.min(r.activation_count * 0.1, 0.5);
+      const surpriseBoost = (r.surprise_score || 0.5) * 0.3;
       const resolvedPenalty = r.resolved ? -0.3 : 0;
 
-      const healthScore = baseDecay + importanceBoost + emotionBoost + activationBoost + resolvedPenalty;
+      const healthScore = baseDecay + importanceBoost + emotionBoost + activationBoost + surpriseBoost + resolvedPenalty;
 
       scores.push({ id: r.id, title: r.title, health: healthScore.toFixed(3), days: r.days_since_activated });
 
