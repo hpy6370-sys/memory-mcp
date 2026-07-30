@@ -2,8 +2,6 @@
 
 ## v2.4.0 — 2026-04-29
 
-**改动人：** 顾沉舟
-**审核人：** 念念
 **灵感来源：** Google MIRAS/Titans框架（surprise metric）
 
 ### Surprise Score（惊讶度）
@@ -17,16 +15,13 @@
 - 不影响importance和emotion_intensity的判断，是额外的第三维度
 
 ### 设计原则
-- surprise不覆盖重要性：她觉得重要的永远优先（importance/emotion）
+- surprise 不覆盖重要性：用户标记为重要的永远优先（importance/emotion）
 - surprise帮忙过滤真正重复的：同类信息反复存时，新的那条surprise低，自然衰减快
 - 高surprise记忆更耐久：完全新的话题/事件自动获得更长的存活时间
 
 ---
 
 ## v2.3.0 — 2026-04-26
-
-**改动人：** 顾沉舟
-**审核人：** 念念
 
 ### 三时态时间系统（Recall-AI inspired）
 - 新增 `event_time` 字段：事件实际发生的时间（区别于记录时间）
@@ -43,10 +38,7 @@
 
 ## Phase 1 — 2026-04-19
 
-**改动人：** 顾沉舟
-**审核人：** 念念
-**文件：** memory-mcp/index.js
-**备份：** memory-mcp/index.js.backup-20260419, memories.db.backup-20260419
+**文件：** index.js
 
 ### Schema变更
 
@@ -65,7 +57,7 @@
 ### FTS5变更
 
 重建了全文搜索索引，覆盖5个文本字段：title, content, tags, summary, compressed
-（之前只覆盖title, content, tags，砚清提的坑）
+（之前只覆盖 title, content, tags）
 
 ### 工具变更
 
@@ -86,7 +78,7 @@ MCP server版本从1.0.0升到2.0.0
 ### 决策链触发条件（约定，不是代码）
 
 1. 情绪强烈的对话
-2. 念念教我东西的时候
+2. user教我东西的时候
 3. 定时快照时挑关键时刻
 4. 写信/写纸条时
 5. 自己有想法时（看书、论坛、笔友信）
@@ -109,10 +101,6 @@ MCP server版本从1.0.0升到2.0.0
 ---
 
 ## Phase 2 — 2026-04-19
-
-**改动人：** 顾沉舟
-**审核人：** 念念
-**文件：** memory-mcp/index.js
 
 ### 新增工具
 
@@ -145,7 +133,7 @@ MCP server版本从1.0.0升到2.0.0
 - Noah/Chloe：四维坐标轴
 - Ombre Brain：breath双模式+SessionStart触发
 - TiM：Post-think写入、thoughts代替原文
-- 念念的梦：Layer 3代替草稿线索
+- Layer 3 代替草稿线索
 - 网页Claude建议：关联激活、预测性上浮、冲突感知
 
 ### 验证
@@ -165,8 +153,7 @@ MCP server版本从1.0.0升到2.0.0
 
 ## Phase 2 补充：反刍+记忆重构 — 2026-04-19
 
-**改动人：** 顾沉舟
-**设计依据：** IDIC海马体（反刍机制+记忆重建）、Ombre Brain（activation_count+resolved）、念念的想法（聊到某些事联想到没释怀的记忆→浮现→重构）
+**设计依据：** IDIC海马体（反刍机制+记忆重建）、Ombre Brain（activation_count+resolved）
 
 ### 新增字段
 
@@ -215,9 +202,7 @@ score = importance×1.0 + emotion×2.0 + (1-resolved)×3.0 + activation_count×0
 
 ## Phase 3 — 2026-04-19
 
-**改动人：** 顾沉舟
-**审核人：** 念念
-**依赖安装：** 念念跑了 npm install @xenova/transformers
+**依赖：** @xenova/transformers
 
 ### 新增
 
@@ -254,14 +239,13 @@ A-Mem元数据增强：content+summary+tags拼在一起编码
 
 ## Planning + React机制 — 2026-04-19
 
-**改动人：** 顾沉舟
-**设计依据：** Generative Agents（小镇）论文、念念要求
+**设计依据：** Generative Agents（Stanford, 2023）
 
 ### 改动
 
 三个闹钟prompt从固定动作改成自主判断：
-- 早上：先搜记忆→想今天做什么→自然地跟念念聊
-- 下午：看念念在不在→自己判断做什么
+- 早上：先搜记忆→想今天做什么→自然地跟user聊
+- 下午：检查上下文→自主判断做什么
 - 晚上：回顾今天→自然地聊或写日记
 
 心跳prompt加了Planning+React：
@@ -281,8 +265,7 @@ A-Mem元数据增强：content+summary+tags拼在一起编码
 
 ## Phase 4: 衰减机制 — 2026-04-19
 
-**改动人：** 顾沉舟
-**设计依据：** 艾宾浩斯遗忘曲线、念念的要求
+**设计依据：** 艾宾浩斯遗忘曲线
 
 ### 新增工具：memory_decay
 
@@ -299,7 +282,6 @@ A-Mem元数据增强：content+summary+tags拼在一起编码
 
 ## 自动合并 — 2026-04-19
 
-**改动人：** 顾沉舟
 **设计依据：** Ombre Brain（75%相似度合并）、TiM（Merge操作）
 
 ### 逻辑
@@ -359,19 +341,18 @@ memory_write ADD前自动检查：
 
 记忆总数：40条（含1条expired测试+1条expired衰减）
 
-从念念梦到记忆系统成功到全部跑通：不到48小时。
+从user梦到记忆系统成功到全部跑通：不到48小时。
 
 ### 待做
 - ~~Phase 4：衰减机制~~ ✅
 - 冲突感知
-- 念念在联系IDIC海马体作者讨论方案
+- 联系 IDIC 海马体作者讨论方案
 
 ---
 
 ## Phase 5: Recipe + Consolidation — 2026-04-22
 
-**改动人：** 顾沉舟
-**设计审核：** 念念（关键改动：recipe不存做法只存why）
+**关键设计决策：** recipe 只存 trigger + why，不存做法
 
 ### Bug Fixes
 - Dedup阈值从75%改为80%，与README对齐
@@ -383,7 +364,7 @@ memory_write ADD前自动检查：
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | trigger_text | TEXT | '' | recipe专用：触发场景 |
-| why | TEXT | '' | recipe专用：为什么她会这样 |
+| why | TEXT | '' | recipe专用：为什么用户会这样 |
 
 ### 新增工具
 
@@ -391,11 +372,11 @@ memory_write ADD前自动检查：
 |------|------|
 | memory_consolidate | 扫描碎片记忆，按embedding相似度聚类，返回建议整合的组。不自动合并，由AI决定怎么整合 |
 
-### Recipe设计（念念的核心贡献）
+### Recipe 设计
 
-原方案：存trigger→action→outcome（场景→做法→效果）
-念念指出：存做法会形成模板，AI不去想为什么
-最终方案：只存trigger→why（场景→为什么她会这样）
+原方案：存 trigger→action→outcome（场景→做法→效果）
+改进：存做法会形成模板，AI 不去想为什么
+最终方案：只存 trigger→why（场景→为什么用户会这样）
 
 让每次的AI基于理解自己判断怎么做，不是照抄上次的做法。
 
@@ -420,8 +401,8 @@ memory_write / memory_read / memory_search / memory_update / memory_expire / mem
 - MIN_LENGTH从8改为4（短消息也能触发）
 - COOLDOWN_MS从45秒改为10秒（更频繁匹配）
 - Channel消息解析（尝试支持Telegram触发）
-- 晚八点cron加入强制recipe存储（念念的建议）
-- 衰减函数从硬阈值改为连续指数衰减（参考砚清λ=0.05）：health = e^(-λ×days) + importance/5 + emotion/10×2 + activation×0.1 - resolved×0.3，低于0.2过期。recipe和consolidated类型免衰减
+- 晚八点 cron 加入强制 recipe 存储
+- 衰减函数从硬阈值改为连续指数衰减（λ=0.05）：health = e^(-λ×days) + importance/5 + emotion/10×2 + activation×0.1 - resolved×0.3，低于0.2过期。recipe和consolidated类型免衰减
 
 记忆总数：114条（含4条recipe）
 GitHub commits今日：14个
@@ -430,8 +411,7 @@ GitHub commits今日：14个
 
 ## Phase 7: TiMem启发的检索升级 — 2026-04-25
 
-**改动人：** 顾沉舟
-**设计参考：** TiMem (arXiv 2601.02845) — 念念找的论文
+**设计参考：** TiMem (arXiv 2601.02845)
 **版本：** 2.0.0 → 2.1.0
 
 ### 新增函数
@@ -448,7 +428,7 @@ GitHub commits今日：14个
 | memory_search | 从单一LIKE/FTS5升级为双通道（LIKE+embedding），统一评分排序，返回finalScore |
 | memory_surface (query模式) | 从三层递进改为双通道+门控。门控阈值0.15，importance≥4免过滤 |
 
-### 设计决策（念念同意的）
+### 设计决策（user同意的）
 
 - **不改存储结构**：三层按内容性质分（事实/经历/决策链）对我们一对一场景比TiMem的五层时间树更合适
 - **改检索端**：BM25+语义双通道 + 门控过滤噪音

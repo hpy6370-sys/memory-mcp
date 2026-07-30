@@ -1,9 +1,38 @@
 node_modules/
+package-lock.json
+
+# Database
 memories.db
+memory.db
 memories.db.backup-*
 *.backup-*
-.last_surface_ts
-chat_archive/
-mem0_data/
+
+# Runtime state
+.last_*
+.reply_count
 followups.jsonl
+_all_active.txt
+
+# Sensitive
 .env
+
+# Training artifacts (models, data, scripts, vendored llama.cpp — 6GB+)
+v2/training/
+
+# Chat archives (personal data)
+chat_archive/
+
+# Python
+__pycache__/
+*.pyc
+
+# Misc junk
+mem0_data/
+heartbeat.txt
+*heartbeat*
+18
+index.js.backup
+learnings.md
+issues.md
+batch_rewrite.cjs
+file_index.cjs

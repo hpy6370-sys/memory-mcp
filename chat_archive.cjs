@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 
 const ARCHIVE_DIR = path.join(__dirname, "chat_archive");
-const RETENTION_DAYS = 3;
+const RETENTION_DAYS = 30;
 
 if (!fs.existsSync(ARCHIVE_DIR)) {
   fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
@@ -76,11 +76,24 @@ process.stdin.on("end", () => {
 
     fs.appendFileSync(archiveFile, JSON.stringify(entry) + "\n", "utf-8");
 
-    // mem0 auto-extract (fire and forget, don't block)
-    if (text.length > 10) {
+    // mem0 v2: batch extraction every 30 minutes from archive
+    const BATCH_INTERVAL = 30 * 60 * 1000; // 30 minutes
+    const batchMarker = path.join(__dirname, ".last_batch");
+    let shouldBatch = false;
+    try {
+      if (fs.existsSync(batchMarker)) {
+        const lastRun = fs.statSync(batchMarker).mtimeMs;
+        shouldBatch = (Date.now() - lastRun) > BATCH_INTERVAL;
+      } else {
+        shouldBatch = true;
+      }
+    } catch { shouldBatch = true; }
+
+    if (shouldBatch && text.length > 5) {
       try {
+        fs.writeFileSync(batchMarker, new Date().toISOString(), "utf-8");
         const { spawn } = require("child_process");
-        const py = spawn("python", [path.join(__dirname, "mem0_bridge.py"), "add", text.slice(0, 500)], { stdio: "ignore", detached: true });
+        const py = spawn("python", [path.join(__dirname, "mem0_bridge.py"), "batch", "30"], { stdio: "ignore", detached: true });
         py.unref();
       } catch {}
     }

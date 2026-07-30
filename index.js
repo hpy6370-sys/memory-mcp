@@ -666,7 +666,7 @@ server.tool("memory_stats",
   }
 );
 
-// Phase 4+: Memory decay with continuous exponential function (inspired by 砚清 λ=0.05)
+// Phase 4+: Memory decay with continuous exponential function (λ=0.05)
 server.tool("memory_decay",
   "衰减检查：用连续指数衰减计算每条记忆的健康分，低于阈值的过期。高importance/emotion/pinned衰减极慢。",
   {},
@@ -801,7 +801,7 @@ server.tool("memory_consolidate",
 
 // Phase 6: User Model - update trait
 server.tool("user_model_update",
-  "更新用户模型的特征权重。每次念念纠正我时调用，自动累加权重",
+  "更新用户模型的特征权重。每次用户纠正时调用，自动累加权重",
   {
     trait: z.string().describe("特征名，如'对催敏感'、'怕断联'"),
     evidence: z.string().describe("本次证据，如'04-23: 一个session催了4次'"),
@@ -828,7 +828,7 @@ server.tool("user_model_top",
     const output = traits.map((t, i) =>
       `${i + 1}. 「${t.trait}」权重${t.weight}（最近确认：${t.last_confirmed || '未知'}）`
     ).join('\n');
-    return { content: [{ type: "text", text: `念念的特征模型（按重要程度排序）：\n${output}` }] };
+    return { content: [{ type: "text", text: `用户特征模型（按重要程度排序）：\n${output}` }] };
   }
 );
 

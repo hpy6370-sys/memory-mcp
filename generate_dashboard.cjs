@@ -80,7 +80,7 @@ const html = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>念念和顾沉舟的记忆</h1>
+<h1>记忆仪表盘</h1>
 
 <div class="stats">
   <div class="stat"><div class="stat-num">${total}</div><div class="stat-label">总记忆数</div></div>
